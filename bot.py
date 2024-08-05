@@ -10,9 +10,10 @@ import os
 import logging
 import discord
 import requests
-from discord.ext import tasks
+from discord.ext import tasks, commands
 from dotenv import load_dotenv
 from datetime import datetime, timezone
+
 
 async def delete_all_messages(channel):
     async for message in channel.history(limit=100):  # Adjust limit as needed
@@ -23,6 +24,7 @@ async def delete_all_messages(channel):
             break
         except discord.HTTPException as e:
             print(f"Failed to delete message: {e}")
+
 
 def format_progress_bar(size, sizeleft, bar_length=20):
     try:
@@ -36,6 +38,7 @@ def format_progress_bar(size, sizeleft, bar_length=20):
     except (ValueError, ZeroDivisionError):
         return "Progress unavailable"
 
+
 def query_sonarr(ip, port, api_key, app_title):
     headers = {"X-Api-Key": api_key}
     endpoint = f"http://{ip}:{port}/api/v3/queue/details?includeSeries=true&includeEpisode=true"
@@ -47,7 +50,7 @@ def query_sonarr(ip, port, api_key, app_title):
         # Extract fields from the main data
         main_title = item.get("title")
         status = item.get("status")
-        timeleft = item.get("timeleft", "N/A")  # Use "N/A" if not present
+        timeleft = item.get("timeleft", "N/A")
         size = item.get("size", "N/A")
         sizeleft = item.get("sizeleft", "N/A")
         error_message = item.get("errorMessage", None)
@@ -94,10 +97,10 @@ def query_sonarr(ip, port, api_key, app_title):
             embed.add_field(name="Error message", value=error_message, inline=False)
         if webimage:
             embed.set_thumbnail(url=webimage)
-        #embed.set_footer(icon_url="https://cdn.dribbble.com/users/151595/screenshots/3517495/media/63404ee313d387351f3e5a0f64bb7b2a.gif")
 
         embeds.append(embed)
     return embeds
+
 
 def query_radarr(ip, port, api_key, app_title):
     headers = {"X-Api-Key": api_key}
@@ -110,7 +113,7 @@ def query_radarr(ip, port, api_key, app_title):
         # Extract fields from the main data
         main_title = item.get("title")
         status = item.get("status")
-        timeleft = item.get("timeleft", "N/A")  # Use "N/A" if not present
+        timeleft = item.get("timeleft", "N/A")
         size = item.get("size", "N/A")
         sizeleft = item.get("sizeleft", "N/A")
         error_message = item.get("errorMessage", None)
@@ -148,19 +151,21 @@ def query_radarr(ip, port, api_key, app_title):
             embed.add_field(name="Error message", value=error_message, inline=False)
         if webimage:
             embed.set_thumbnail(url=webimage)
-        #embed.set_footer(icon_url="https://cdn.dribbble.com/users/151595/screenshots/3517495/media/63404ee313d387351f3e5a0f64bb7b2a.gif")
 
         embeds.append(embed)
     return embeds
+
 
 def split_embeds(embeds, max_embeds=10):
     # Split embeds into chunks of max_embeds each
     return [embeds[i:i + max_embeds] for i in range(0, len(embeds), max_embeds)]
 
+
 async def send_default_message(channel):
     # Send a default message indicating nothing is being downloaded
     default_message = await channel.send("Nothing is being downloaded at the moment. :)")
     return default_message
+
 
 async def handle_messages(channel, embeds, default_message=None):
     global bot_messages
@@ -193,6 +198,7 @@ async def handle_messages(channel, embeds, default_message=None):
                 bot_messages.append(msg)
     return default_message
 
+
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 DISCORD_CHANNEL_ID = int(os.getenv('DISCORD_CHANNEL_ID'))
@@ -220,9 +226,10 @@ RADARR_TITLE_ANIME = os.getenv('RADARR_TITLE_ANIME')
 handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
 
 intents = discord.Intents.default()
-client = discord.Client(intents=intents)
+client = commands.Bot(command_prefix='/', intents=intents)
 bot_messages = []  # Placeholder for the bot's messages
 default_message = None
+
 
 @client.event
 async def on_ready():
@@ -248,6 +255,7 @@ async def on_ready():
     else:
         print("Channel not found!")
 
+
 @tasks.loop(minutes=1)  # Task to run every x minutes
 async def update_messages():
     global bot_messages, default_message
@@ -263,5 +271,32 @@ async def update_messages():
 
         # Handle messages and default message
         default_message = await handle_messages(channel, embeds, default_message)
+
+
+@client.tree.command(name="refresh", description="Refresh the current status of downloads")
+async def refresh(interaction: discord.Interaction):
+    global update_messages, default_message, bot_messages
+
+    await interaction.response.send_message("Refreshing data...")
+
+    if update_messages.is_running():
+        update_messages.stop()
+
+    channel = client.get_channel(DISCORD_CHANNEL_ID)
+
+    if channel:
+        await delete_all_messages(channel)
+
+        embeds = []
+        embeds += query_sonarr(SONARR_IP, SONARR_PORT, SONARR_API_KEY, SONARR_TITLE)
+        embeds += query_sonarr(SONARR_IP_ANIME, SONARR_PORT_ANIME, SONARR_API_KEY_ANIME, SONARR_TITLE_ANIME)
+        embeds += query_radarr(RADARR_IP, RADARR_PORT, RADARR_API_KEY, RADARR_TITLE)
+        embeds += query_radarr(RADARR_IP_ANIME, RADARR_PORT_ANIME, RADARR_API_KEY_ANIME, RADARR_TITLE_ANIME)
+
+        default_message = await handle_messages(channel, embeds)
+        update_messages.start()
+    else:
+        print("Channel not found!")
+
 
 client.run(TOKEN, log_handler=None)
