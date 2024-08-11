@@ -3,7 +3,7 @@ Copyright © Dino Horvat (Tremmert) 2024-Present - https://github.com/DinoHorvat
 Description:
 A simple bot which tracks the download progress of Sonarr & Radarr instances and reports their status to a Discord channel
 
-Version: 1.1.2
+Version: 1.1.3
 """
 
 import os
@@ -14,7 +14,7 @@ from discord.ext import tasks, commands
 from dotenv import load_dotenv
 from datetime import datetime, timezone
 import gc
-
+import sys
 
 async def delete_all_messages(channel):
     async for message in channel.history(limit=100):  # Adjust limit as needed
@@ -25,7 +25,6 @@ async def delete_all_messages(channel):
             break
         except discord.HTTPException as e:
             print(f"Failed to delete message: {e}")
-
 
 def format_progress_bar(size, sizeleft, bar_length=20):
     try:
@@ -38,7 +37,6 @@ def format_progress_bar(size, sizeleft, bar_length=20):
         return f"[{bar}] {percentage:.1f}%"
     except (ValueError, ZeroDivisionError):
         return "Progress unavailable"
-
 
 def query_sonarr(ip, port, api_key, app_title):
     try:
@@ -105,7 +103,6 @@ def query_sonarr(ip, port, api_key, app_title):
         embeds.append(embed)
     return embeds
 
-
 def query_radarr(ip, port, api_key, app_title):
     try:
         headers = {"X-Api-Key": api_key}
@@ -116,8 +113,8 @@ def query_radarr(ip, port, api_key, app_title):
         logging.error(f"An error occurred when querying Radarr {app_title}: {e}")
 
     embeds = []
+    # Extract fields from the main data
     for item in json_data:
-        # Extract fields from the main data
         main_title = item.get("title")
         status = item.get("status")
         timeleft = item.get("timeleft", "N/A")
@@ -162,17 +159,14 @@ def query_radarr(ip, port, api_key, app_title):
         embeds.append(embed)
     return embeds
 
-
 def split_embeds(embeds, max_embeds=10):
     # Split embeds into chunks of max_embeds each
     return [embeds[i:i + max_embeds] for i in range(0, len(embeds), max_embeds)]
-
 
 async def send_default_message(channel):
     # Send a default message indicating nothing is being downloaded
     default_message = await channel.send("Nothing is being downloaded at the moment. :)")
     return default_message
-
 
 async def handle_messages(channel, embeds, default_message=None):
     global bot_messages
@@ -205,7 +199,6 @@ async def handle_messages(channel, embeds, default_message=None):
                 bot_messages.append(msg)
     return default_message
 
-
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 DISCORD_CHANNEL_ID = int(os.getenv('DISCORD_CHANNEL_ID'))
@@ -230,19 +223,23 @@ RADARR_PORT_ANIME = os.getenv('RADARR_PORT_ANIME')
 RADARR_API_KEY_ANIME = os.getenv('RADARR_API_KEY_ANIME')
 RADARR_TITLE_ANIME = os.getenv('RADARR_TITLE_ANIME')
 
-handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
+handler = logging.StreamHandler(sys.stdout)  # Log to stdout
+handler.setLevel(logging.INFO)
+logging.basicConfig(level=logging.INFO, handlers=[handler], format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-intents = discord.Intents.default()
-client = commands.Bot(command_prefix='/', intents=intents)
-bot_messages = []  # Placeholder for the bot's messages
+# Global variables to store the default message and bot messages
 default_message = None
+bot_messages = []  # Placeholder for the bot's messages
 
+# Discord Intents setup
+intents = discord.Intents.default()
+intents.message_content = True  # Enable message content intent
+client = commands.Bot(command_prefix='/', intents=intents)
 
 @client.event
 async def on_ready():
     global bot_messages, default_message
     print(f'{client.user} has connected to Discord!')
-    logging.info(f'{client.user} has connected to Discord!')
     channel = client.get_channel(DISCORD_CHANNEL_ID)
 
     if channel:
@@ -258,47 +255,31 @@ async def on_ready():
 
         # Handle messages and default message
         default_message = await handle_messages(channel, embeds)
+        # Perform garbage collection
+        gc.collect()
         # Start the task to update the messages every x minutes
         update_messages.start()
     else:
         print("Channel not found!")
-        logging.error("Channel not found!")
 
 
 @tasks.loop(minutes=1)  # Task to run every x minutes
 async def update_messages():
-    try:
-        global bot_messages, default_message
-        channel = client.get_channel(DISCORD_CHANNEL_ID)
+    global bot_messages, default_message
+    channel = client.get_channel(DISCORD_CHANNEL_ID)
 
-        if channel:
-            # Fetch data from Sonarr & Radarr instances
-            embeds = []
-            embeds += query_sonarr(SONARR_IP, SONARR_PORT, SONARR_API_KEY, SONARR_TITLE)
-            embeds += query_sonarr(SONARR_IP_ANIME, SONARR_PORT_ANIME, SONARR_API_KEY_ANIME, SONARR_TITLE_ANIME)
-            embeds += query_radarr(RADARR_IP, RADARR_PORT, RADARR_API_KEY, RADARR_TITLE)
-            embeds += query_radarr(RADARR_IP_ANIME, RADARR_PORT_ANIME, RADARR_API_KEY_ANIME, RADARR_TITLE_ANIME)
+    if channel:
+        # Fetch data from Sonarr & Radarr instances
+        embeds = []
+        embeds += query_sonarr(SONARR_IP, SONARR_PORT, SONARR_API_KEY, SONARR_TITLE)
+        embeds += query_sonarr(SONARR_IP_ANIME, SONARR_PORT_ANIME, SONARR_API_KEY_ANIME, SONARR_TITLE_ANIME)
+        embeds += query_radarr(RADARR_IP, RADARR_PORT, RADARR_API_KEY, RADARR_TITLE)
+        embeds += query_radarr(RADARR_IP_ANIME, RADARR_PORT_ANIME, RADARR_API_KEY_ANIME, RADARR_TITLE_ANIME)
 
-            # Handle messages and default message
-            default_message = await handle_messages(channel, embeds, default_message)
-    except Exception as  e:
-        logging.error(f"Update task encountered an error: {e}")
-
-@tasks.loop(minutes=60)  # Runs every 60 minutes
-async def clear_old_messages():
-    global bot_messages
-
-    if bot_messages:
-        # Check each message and delete if older than a certain time
-        current_time = datetime.now(timezone.utc)
-        for msg in bot_messages[:]:
-            if (current_time - msg.created_at).total_seconds() > 3600:  # Older than 1 hour
-                await msg.delete()
-                bot_messages.remove(msg)
-    try:
+        # Handle messages and default message
+        default_message = await handle_messages(channel, embeds, default_message)
+        # Perform garbage collection
         gc.collect()
-    except Exception as e:
-        logging.error(f"Failed to run garbage collection: {e}")
 
 
 @client.tree.command(name="refresh", description="Refresh the current status of downloads")
@@ -326,4 +307,5 @@ async def refresh(interaction: discord.Interaction):
     else:
         print("Channel not found!")
 
-client.run(TOKEN, log_handler=handler, root_logger=True)
+
+client.run(TOKEN, log_handler=None)
