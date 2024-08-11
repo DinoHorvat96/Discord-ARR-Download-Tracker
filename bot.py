@@ -3,7 +3,7 @@ Copyright © Dino Horvat (Tremmert) 2024-Present - https://github.com/DinoHorvat
 Description:
 A simple bot which tracks the download progress of Sonarr & Radarr instances and reports their status to a Discord channel
 
-Version: 1.1.1
+Version: 1.1.2
 """
 
 import os
@@ -13,6 +13,7 @@ import requests
 from discord.ext import tasks, commands
 from dotenv import load_dotenv
 from datetime import datetime, timezone
+import gc
 
 
 async def delete_all_messages(channel):
@@ -40,10 +41,13 @@ def format_progress_bar(size, sizeleft, bar_length=20):
 
 
 def query_sonarr(ip, port, api_key, app_title):
-    headers = {"X-Api-Key": api_key}
-    endpoint = f"http://{ip}:{port}/api/v3/queue/details?includeSeries=true&includeEpisode=true"
-    response = requests.get(endpoint, headers=headers)
-    json_data = response.json()
+    try:
+        headers = {"X-Api-Key": api_key}
+        endpoint = f"http://{ip}:{port}/api/v3/queue/details?includeSeries=true&includeEpisode=true"
+        response = requests.get(endpoint, headers=headers, timeout=10)
+        json_data = response.json()
+    except Exception as e:
+        logging.error(f"An error occurred when querying Sonarr {app_title}: {e}")
 
     embeds = []
     for item in json_data:
@@ -103,10 +107,13 @@ def query_sonarr(ip, port, api_key, app_title):
 
 
 def query_radarr(ip, port, api_key, app_title):
-    headers = {"X-Api-Key": api_key}
-    endpoint = f"http://{ip}:{port}/api/v3/queue/details?includeMovie=true"
-    response = requests.get(endpoint, headers=headers)
-    json_data = response.json()
+    try:
+        headers = {"X-Api-Key": api_key}
+        endpoint = f"http://{ip}:{port}/api/v3/queue/details?includeMovie=true"
+        response = requests.get(endpoint, headers=headers, timeout=10)
+        json_data = response.json()
+    except Exception as e:
+        logging.error(f"An error occurred when querying Radarr {app_title}: {e}")
 
     embeds = []
     for item in json_data:
@@ -235,6 +242,7 @@ default_message = None
 async def on_ready():
     global bot_messages, default_message
     print(f'{client.user} has connected to Discord!')
+    logging.info(f'{client.user} has connected to Discord!')
     channel = client.get_channel(DISCORD_CHANNEL_ID)
 
     if channel:
@@ -254,23 +262,43 @@ async def on_ready():
         update_messages.start()
     else:
         print("Channel not found!")
+        logging.error("Channel not found!")
 
 
 @tasks.loop(minutes=1)  # Task to run every x minutes
 async def update_messages():
-    global bot_messages, default_message
-    channel = client.get_channel(DISCORD_CHANNEL_ID)
+    try:
+        global bot_messages, default_message
+        channel = client.get_channel(DISCORD_CHANNEL_ID)
 
-    if channel:
-        # Fetch data from Sonarr & Radarr instances
-        embeds = []
-        embeds += query_sonarr(SONARR_IP, SONARR_PORT, SONARR_API_KEY, SONARR_TITLE)
-        embeds += query_sonarr(SONARR_IP_ANIME, SONARR_PORT_ANIME, SONARR_API_KEY_ANIME, SONARR_TITLE_ANIME)
-        embeds += query_radarr(RADARR_IP, RADARR_PORT, RADARR_API_KEY, RADARR_TITLE)
-        embeds += query_radarr(RADARR_IP_ANIME, RADARR_PORT_ANIME, RADARR_API_KEY_ANIME, RADARR_TITLE_ANIME)
+        if channel:
+            # Fetch data from Sonarr & Radarr instances
+            embeds = []
+            embeds += query_sonarr(SONARR_IP, SONARR_PORT, SONARR_API_KEY, SONARR_TITLE)
+            embeds += query_sonarr(SONARR_IP_ANIME, SONARR_PORT_ANIME, SONARR_API_KEY_ANIME, SONARR_TITLE_ANIME)
+            embeds += query_radarr(RADARR_IP, RADARR_PORT, RADARR_API_KEY, RADARR_TITLE)
+            embeds += query_radarr(RADARR_IP_ANIME, RADARR_PORT_ANIME, RADARR_API_KEY_ANIME, RADARR_TITLE_ANIME)
 
-        # Handle messages and default message
-        default_message = await handle_messages(channel, embeds, default_message)
+            # Handle messages and default message
+            default_message = await handle_messages(channel, embeds, default_message)
+    except Exception as  e:
+        logging.error(f"Update task encountered an error: {e}")
+
+@tasks.loop(minutes=60)  # Runs every 60 minutes
+async def clear_old_messages():
+    global bot_messages
+
+    if bot_messages:
+        # Check each message and delete if older than a certain time
+        current_time = datetime.now(timezone.utc)
+        for msg in bot_messages[:]:
+            if (current_time - msg.created_at).total_seconds() > 3600:  # Older than 1 hour
+                await msg.delete()
+                bot_messages.remove(msg)
+    try:
+        gc.collect()
+    except Exception as e:
+        logging.error(f"Failed to run garbage collection: {e}")
 
 
 @client.tree.command(name="refresh", description="Refresh the current status of downloads")
@@ -298,5 +326,4 @@ async def refresh(interaction: discord.Interaction):
     else:
         print("Channel not found!")
 
-
-client.run(TOKEN, log_handler=None)
+client.run(TOKEN, log_handler=handler, root_logger=True)
