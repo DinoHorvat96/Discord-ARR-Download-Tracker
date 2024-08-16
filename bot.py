@@ -3,7 +3,7 @@ Copyright © Dino Horvat (Tremmert) 2024-Present - https://github.com/DinoHorvat
 Description:
 A simple bot which tracks the download progress of Sonarr & Radarr instances and reports their status to a Discord channel
 
-Version: 1.1.4
+Version: 1.1.5
 """
 
 import os
@@ -171,10 +171,11 @@ async def send_default_message(channel):
 async def handle_messages(channel, embeds, default_message=None):
     global bot_messages
     if not embeds:
+        # If there are no active downloads and no default message, send one
         if not default_message:
             default_message = await send_default_message(channel)
+        # If there are active bot messages (download embeds), delete them
         if bot_messages:
-            # If there are messages to delete, delete them
             for msg in bot_messages:
                 try:
                     await msg.delete()
@@ -182,14 +183,15 @@ async def handle_messages(channel, embeds, default_message=None):
                     logging.warning(f"Message with ID {msg.id} not found when attempting to delete.")
                 except discord.Forbidden:
                     logging.error("Bot does not have permission to delete messages.")
-                    break
                 except discord.HTTPException as e:
                     logging.error(f"Failed to delete message: {e}")
-            bot_messages = [default_message]
+            bot_messages = []  # Reset bot_messages list since all should be deleted
     else:
+        # If there is a default message and downloads have started, delete the default message
         if default_message:
             try:
                 await default_message.delete()
+                default_message = None  # Reset default_message to None after deletion
             except discord.NotFound:
                 logging.warning(f"Default message with ID {default_message.id} not found when attempting to delete.")
             except discord.Forbidden:
@@ -197,44 +199,38 @@ async def handle_messages(channel, embeds, default_message=None):
             except discord.HTTPException as e:
                 logging.error(f"Failed to delete default message: {e}")
 
-        # Combine all embeds
+        # If there are new embeds, handle them
         split_embed_chunks = split_embeds(embeds)
-        for chunk in split_embed_chunks:
-            if bot_messages:
-                # Update existing messages if any
-                for i, msg in enumerate(bot_messages):
-                    if i < len(split_embed_chunks):
-                        try:
-                            await msg.edit(embeds=chunk)
-                        except discord.NotFound:
-                            logging.warning(f"Message with ID {msg.id} not found when attempting to edit.")
-                        except discord.Forbidden:
-                            logging.error("Bot does not have permission to edit messages.")
-                            break
-                        except discord.HTTPException as e:
-                            logging.error(f"Failed to edit message: {e}")
-                    else:
-                        # If there are more messages than chunks, delete the extra messages
-                        try:
-                            await msg.delete()
-                        except discord.NotFound:
-                            logging.warning(f"Message with ID {msg.id} not found when attempting to delete.")
-                        except discord.Forbidden:
-                            logging.error("Bot does not have permission to delete messages.")
-                            break
-                        except discord.HTTPException as e:
-                            logging.error(f"Failed to delete message: {e}")
-                bot_messages = bot_messages[:len(split_embed_chunks)]
-            # Add new messages if needed
-            for chunk in split_embed_chunks[len(bot_messages):]:
+        for i, chunk in enumerate(split_embed_chunks):
+            if i < len(bot_messages):
+                try:
+                    await bot_messages[i].edit(embeds=chunk)
+                except discord.NotFound:
+                    logging.warning(f"Message with ID {bot_messages[i].id} not found when attempting to edit.")
+                except discord.Forbidden:
+                    logging.error("Bot does not have permission to edit messages.")
+                except discord.HTTPException as e:
+                    logging.error(f"Failed to edit message: {e}")
+            else:
                 try:
                     msg = await channel.send(embeds=chunk)
                     bot_messages.append(msg)
                 except discord.Forbidden:
                     logging.error("Bot does not have permission to send messages.")
-                    break
                 except discord.HTTPException as e:
                     logging.error(f"Failed to send new message: {e}")
+
+        # Delete any extra messages if there are more in bot_messages than needed
+        for msg in bot_messages[len(split_embed_chunks):]:
+            try:
+                await msg.delete()
+            except discord.NotFound:
+                logging.warning(f"Message with ID {msg.id} not found when attempting to delete.")
+            except discord.Forbidden:
+                logging.error("Bot does not have permission to delete messages.")
+            except discord.HTTPException as e:
+                logging.error(f"Failed to delete message: {e}")
+        bot_messages = bot_messages[:len(split_embed_chunks)]  # Trim to the right length
     return default_message
 
 load_dotenv()
