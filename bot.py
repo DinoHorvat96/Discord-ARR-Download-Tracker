@@ -3,7 +3,7 @@ Copyright © Dino Horvat (Tremmert) 2024-Present - https://github.com/DinoHorvat
 Description:
 A simple bot which tracks the download progress of Sonarr & Radarr instances and reports their status to a Discord channel
 
-Version: 1.1.5
+Version: 1.1.6
 """
 
 import os
@@ -15,6 +15,8 @@ from dotenv import load_dotenv
 from datetime import datetime, timezone
 import gc
 import sys
+import asyncio
+from discord.errors import HTTPException, NotFound, Forbidden
 
 async def delete_all_messages(channel):
     async for message in channel.history(limit=100):  # Adjust limit as needed
@@ -179,12 +181,12 @@ async def handle_messages(channel, embeds, default_message=None):
             for msg in bot_messages:
                 try:
                     await msg.delete()
-                except discord.NotFound:
+                except NotFound:
                     logging.warning(f"Message with ID {msg.id} not found when attempting to delete.")
-                except discord.Forbidden:
+                except Forbidden:
                     logging.error("Bot does not have permission to delete messages.")
-                except discord.HTTPException as e:
-                    logging.error(f"Failed to delete message: {e}")
+                except HTTPException as e:
+                    await handle_rate_limit(e)
             bot_messages = []  # Reset bot_messages list since all should be deleted
     else:
         # If there is a default message and downloads have started, delete the default message
@@ -192,12 +194,12 @@ async def handle_messages(channel, embeds, default_message=None):
             try:
                 await default_message.delete()
                 default_message = None  # Reset default_message to None after deletion
-            except discord.NotFound:
+            except NotFound:
                 logging.warning(f"Default message with ID {default_message.id} not found when attempting to delete.")
-            except discord.Forbidden:
+            except Forbidden:
                 logging.error("Bot does not have permission to delete messages.")
-            except discord.HTTPException as e:
-                logging.error(f"Failed to delete default message: {e}")
+            except HTTPException as e:
+                await handle_rate_limit(e)
 
         # If there are new embeds, handle them
         split_embed_chunks = split_embeds(embeds)
@@ -205,33 +207,44 @@ async def handle_messages(channel, embeds, default_message=None):
             if i < len(bot_messages):
                 try:
                     await bot_messages[i].edit(embeds=chunk)
-                except discord.NotFound:
+                except NotFound:
                     logging.warning(f"Message with ID {bot_messages[i].id} not found when attempting to edit.")
-                except discord.Forbidden:
+                except Forbidden:
                     logging.error("Bot does not have permission to edit messages.")
-                except discord.HTTPException as e:
-                    logging.error(f"Failed to edit message: {e}")
+                except HTTPException as e:
+                    await handle_rate_limit(e)
             else:
                 try:
                     msg = await channel.send(embeds=chunk)
                     bot_messages.append(msg)
-                except discord.Forbidden:
+                except Forbidden:
                     logging.error("Bot does not have permission to send messages.")
-                except discord.HTTPException as e:
-                    logging.error(f"Failed to send new message: {e}")
+                except HTTPException as e:
+                    await handle_rate_limit(e)
 
         # Delete any extra messages if there are more in bot_messages than needed
         for msg in bot_messages[len(split_embed_chunks):]:
             try:
                 await msg.delete()
-            except discord.NotFound:
+            except NotFound:
                 logging.warning(f"Message with ID {msg.id} not found when attempting to delete.")
-            except discord.Forbidden:
+            except Forbidden:
                 logging.error("Bot does not have permission to delete messages.")
-            except discord.HTTPException as e:
-                logging.error(f"Failed to delete message: {e}")
+            except HTTPException as e:
+                await handle_rate_limit(e)
         bot_messages = bot_messages[:len(split_embed_chunks)]  # Trim to the right length
+
     return default_message
+
+async def handle_rate_limit(error):
+    """Handles rate limit errors by pausing execution for the specified retry_after time."""
+    if error.code == 429:  # 429 status code indicates a rate limit
+        retry_after = error.response.json().get('retry_after')
+        logging.warning(f"Rate limited. Retrying in {retry_after} seconds.")
+        await asyncio.sleep(retry_after)
+    else:
+        logging.error(f"Unexpected error occurred: {error}")
+        raise error
 
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
