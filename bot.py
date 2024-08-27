@@ -3,7 +3,7 @@ Copyright © Dino Horvat (Tremmert) 2024-Present - https://github.com/DinoHorvat
 Description:
 A simple bot which tracks the download progress of Sonarr & Radarr instances and reports their status to a Discord channel
 
-Version: 1.1.6
+Version: 1.1.7
 """
 
 import os
@@ -17,6 +17,8 @@ import gc
 import sys
 import asyncio
 from discord.errors import HTTPException, NotFound, Forbidden
+from requests.exceptions import RequestException
+import time
 
 async def delete_all_messages(channel):
     async for message in channel.history(limit=100):  # Adjust limit as needed
@@ -40,14 +42,26 @@ def format_progress_bar(size, sizeleft, bar_length=20):
     except (ValueError, ZeroDivisionError):
         return "Progress unavailable"
 
-def query_sonarr(ip, port, api_key, app_title):
-    try:
-        headers = {"X-Api-Key": api_key}
-        endpoint = f"http://{ip}:{port}/api/v3/queue/details?includeSeries=true&includeEpisode=true"
-        response = requests.get(endpoint, headers=headers, timeout=10)
-        json_data = response.json()
-    except Exception as e:
-        logging.error(f"An error occurred when querying Sonarr {app_title}: {e}")
+def query_sonarr(ip, port, api_key, app_title, max_retries=5, delay=10):
+    headers = {"X-Api-Key": api_key}
+    endpoint = f"http://{ip}:{port}/api/v3/queue/details?includeSeries=true&includeEpisode=true"
+
+    retries = 0
+    while retries < max_retries:
+        try:
+            response = requests.get(endpoint, headers=headers, timeout=10)
+            response.raise_for_status()  # Raise an error for bad status codes
+            json_data = response.json()
+            break  # Exit the loop if the request is successful
+        except RequestException as e:
+            logging.error(f"An error occurred when querying Sonarr {app_title}: {e}")
+            retries += 1
+            if retries < max_retries:
+                logging.info(f"Retrying in {delay} seconds... ({retries}/{max_retries})")
+                time.sleep(delay)
+            else:
+                logging.error(f"Max retries exceeded. Failed to connect to Sonarr at {ip}:{port}.")
+                return []  # Return an empty list to avoid further errors
 
     embeds = []
     for item in json_data:
@@ -105,14 +119,26 @@ def query_sonarr(ip, port, api_key, app_title):
         embeds.append(embed)
     return embeds
 
-def query_radarr(ip, port, api_key, app_title):
-    try:
-        headers = {"X-Api-Key": api_key}
-        endpoint = f"http://{ip}:{port}/api/v3/queue/details?includeMovie=true"
-        response = requests.get(endpoint, headers=headers, timeout=10)
-        json_data = response.json()
-    except Exception as e:
-        logging.error(f"An error occurred when querying Radarr {app_title}: {e}")
+def query_radarr(ip, port, api_key, app_title, max_retries=5, delay=10):
+    headers = {"X-Api-Key": api_key}
+    endpoint = f"http://{ip}:{port}/api/v3/queue/details?includeMovie=true"
+
+    retries = 0
+    while retries < max_retries:
+        try:
+            response = requests.get(endpoint, headers=headers, timeout=10)
+            response.raise_for_status()  # Raise an error for bad status codes
+            json_data = response.json()
+            break  # Exit the loop if the request is successful
+        except RequestException as e:
+            logging.error(f"An error occurred when querying Radarr {app_title}: {e}")
+            retries += 1
+            if retries < max_retries:
+                logging.info(f"Retrying in {delay} seconds... ({retries}/{max_retries})")
+                time.sleep(delay)
+            else:
+                logging.error(f"Max retries exceeded. Failed to connect to Radarr at {ip}:{port}.")
+                return []  # Return an empty list to avoid further errors
 
     embeds = []
     # Extract fields from the main data
