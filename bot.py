@@ -296,6 +296,19 @@ RADARR_PORT_ANIME = os.getenv('RADARR_PORT_ANIME')
 RADARR_API_KEY_ANIME = os.getenv('RADARR_API_KEY_ANIME')
 RADARR_TITLE_ANIME = os.getenv('RADARR_TITLE_ANIME')
 
+TIME_NUMERIC = int(os.getenv('TIME_NUMERIC', 15))  # Default to 15 if not provided
+TIME_FORMAT = os.getenv('TIME_FORMAT', 'seconds')  # Default to 'seconds' if not provided
+
+# Convert the TIME_FORMAT into an appropriate loop interval
+if TIME_FORMAT == 'seconds':
+    interval_kwargs = {'seconds': TIME_NUMERIC}
+elif TIME_FORMAT == 'minutes':
+    interval_kwargs = {'minutes': TIME_NUMERIC}
+elif TIME_FORMAT == 'hours':
+    interval_kwargs = {'hours': TIME_NUMERIC}
+else:
+    raise ValueError(f"Invalid TIME_FORMAT: {TIME_FORMAT}. Use 'seconds', 'minutes', or 'hours'.")
+
 handler = logging.StreamHandler(sys.stdout)  # Log to stdout
 handler.setLevel(logging.INFO)
 logging.basicConfig(level=logging.INFO, handlers=[handler], format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -336,7 +349,7 @@ async def on_ready():
         print("Channel not found!")
 
 
-@tasks.loop(minutes=1)  # Task to run every x minutes
+@tasks.loop(**interval_kwargs)  # Task to run based on environment variables TIME_NUMERIC and TIME_FORMAT
 async def update_messages():
     global bot_messages, default_message
     channel = client.get_channel(DISCORD_CHANNEL_ID)
