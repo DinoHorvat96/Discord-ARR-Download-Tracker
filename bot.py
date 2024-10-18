@@ -3,7 +3,7 @@ Copyright © Dino Horvat (Tremmert) 2024-Present - https://github.com/DinoHorvat
 Description:
 A simple bot which tracks the download progress of Sonarr & Radarr instances and reports their status to a Discord channel
 
-Version: 1.1.7
+Version: 1.1.9
 """
 
 import os
@@ -21,14 +21,16 @@ from requests.exceptions import RequestException
 import time
 
 async def delete_all_messages(channel):
-    async for message in channel.history(limit=100):  # Adjust limit as needed
-        try:
-            await message.delete()
-        except discord.Forbidden:
-            print("Bot does not have permission to delete messages.")
-            break
-        except discord.HTTPException as e:
-            print(f"Failed to delete message: {e}")
+    try:
+        async for message in channel.history(limit=100):
+            try:
+                await message.delete()
+            except discord.Forbidden:
+                logging.error("Bot does not have permission to delete messages.")
+            except discord.errors.NotFound:
+                logging.warning(f"Message with ID {message.id} not found when attempting to delete.")
+    except discord.errors.DiscordException as e:
+        logging.error(f"Failed to delete messages in channel {channel.id}: {e}")
 
 def format_progress_bar(size, sizeleft, bar_length=20):
     try:
@@ -198,69 +200,45 @@ async def send_default_message(channel):
 
 async def handle_messages(channel, embeds, default_message=None):
     global bot_messages
+    # If there are no messages yet or no embeds to display
     if not embeds:
-        # If there are no active downloads and no default message, send one
-        if not default_message:
-            default_message = await send_default_message(channel)
-        # If there are active bot messages (download embeds), delete them
-        if bot_messages:
-            for msg in bot_messages:
-                try:
-                    await msg.delete()
-                except NotFound:
-                    logging.warning(f"Message with ID {msg.id} not found when attempting to delete.")
-                except Forbidden:
-                    logging.error("Bot does not have permission to delete messages.")
-                except HTTPException as e:
-                    await handle_rate_limit(e)
-            bot_messages = []  # Reset bot_messages list since all should be deleted
-    else:
-        # If there is a default message and downloads have started, delete the default message
         if default_message:
             try:
-                await default_message.delete()
-                default_message = None  # Reset default_message to None after deletion
-            except NotFound:
-                logging.warning(f"Default message with ID {default_message.id} not found when attempting to delete.")
-            except Forbidden:
-                logging.error("Bot does not have permission to delete messages.")
-            except HTTPException as e:
-                await handle_rate_limit(e)
+                await default_message.edit(content="No active downloads currently.")
+            except discord.errors.NotFound:
+                # If the default message was not found, delete all messages and regenerate
+                await delete_all_messages(channel)
+                default_message = await channel.send("No active downloads currently.")
+        else:
+            # If no default message exists, send a new default message
+            default_message = await channel.send("No active downloads currently.")
+        return default_message
 
-        # If there are new embeds, handle them
-        split_embed_chunks = split_embeds(embeds)
-        for i, chunk in enumerate(split_embed_chunks):
-            if i < len(bot_messages):
-                try:
-                    await bot_messages[i].edit(embeds=chunk)
-                except NotFound:
-                    logging.warning(f"Message with ID {bot_messages[i].id} not found when attempting to edit.")
-                except Forbidden:
-                    logging.error("Bot does not have permission to edit messages.")
-                except HTTPException as e:
-                    await handle_rate_limit(e)
-            else:
-                try:
-                    msg = await channel.send(embeds=chunk)
-                    bot_messages.append(msg)
-                except Forbidden:
-                    logging.error("Bot does not have permission to send messages.")
-                except HTTPException as e:
-                    await handle_rate_limit(e)
-
-        # Delete any extra messages if there are more in bot_messages than needed
-        for msg in bot_messages[len(split_embed_chunks):]:
+    # Delete all previous messages if new data exists
+    if bot_messages:
+        for msg in bot_messages:
             try:
                 await msg.delete()
-            except NotFound:
+            except discord.errors.NotFound:
                 logging.warning(f"Message with ID {msg.id} not found when attempting to delete.")
-            except Forbidden:
-                logging.error("Bot does not have permission to delete messages.")
-            except HTTPException as e:
-                await handle_rate_limit(e)
-        bot_messages = bot_messages[:len(split_embed_chunks)]  # Trim to the right length
 
-    return default_message
+    # Send new messages for each embed
+    bot_messages = []
+    for embed in embeds:
+        try:
+            msg = await channel.send(embed=embed)
+            bot_messages.append(msg)
+        except discord.errors.HTTPException as e:
+            logging.error(f"Failed to send message: {e}")
+
+    # Clear the default message if embeds are present
+    if default_message:
+        try:
+            await default_message.delete()
+        except discord.errors.NotFound:
+            logging.warning(f"Default message with ID {default_message.id} not found when attempting to delete.")
+
+    return None  # No default message needed if embeds are present
 
 async def handle_rate_limit(error):
     """Handles rate limit errors by pausing execution for the specified retry_after time."""
@@ -351,22 +329,26 @@ async def on_ready():
 
 @tasks.loop(**interval_kwargs)  # Task to run based on environment variables TIME_NUMERIC and TIME_FORMAT
 async def update_messages():
-    global bot_messages, default_message
+    global default_message
     channel = client.get_channel(DISCORD_CHANNEL_ID)
 
     if channel:
-        # Fetch data from Sonarr & Radarr instances
-        embeds = []
-        embeds += query_sonarr(SONARR_IP, SONARR_PORT, SONARR_API_KEY, SONARR_TITLE)
-        embeds += query_sonarr(SONARR_IP_ANIME, SONARR_PORT_ANIME, SONARR_API_KEY_ANIME, SONARR_TITLE_ANIME)
-        embeds += query_radarr(RADARR_IP, RADARR_PORT, RADARR_API_KEY, RADARR_TITLE)
-        embeds += query_radarr(RADARR_IP_ANIME, RADARR_PORT_ANIME, RADARR_API_KEY_ANIME, RADARR_TITLE_ANIME)
+        try:
+            # Fetch data from Sonarr & Radarr instances
+            embeds = []
+            embeds += query_sonarr(SONARR_IP, SONARR_PORT, SONARR_API_KEY, SONARR_TITLE)
+            embeds += query_sonarr(SONARR_IP_ANIME, SONARR_PORT_ANIME, SONARR_API_KEY_ANIME, SONARR_TITLE_ANIME)
+            embeds += query_radarr(RADARR_IP, RADARR_PORT, RADARR_API_KEY, RADARR_TITLE)
+            embeds += query_radarr(RADARR_IP_ANIME, RADARR_PORT_ANIME, RADARR_API_KEY_ANIME, RADARR_TITLE_ANIME)
 
-        # Handle messages and default message
-        default_message = await handle_messages(channel, embeds, default_message)
-        # Perform garbage collection
-        gc.collect()
-
+            # Handle the new messages, delete the old ones
+            default_message = await handle_messages(channel, embeds, default_message)
+            # Perform garbage collection
+            gc.collect()
+        except Exception as e:
+            logging.error(f"An error occurred in update_messages: {e}")
+    else:
+        logging.error("Channel not found!")
 
 @client.tree.command(name="refresh", description="Refresh the current status of downloads")
 async def refresh(interaction: discord.Interaction):
