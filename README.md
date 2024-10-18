@@ -63,3 +63,7 @@ Me or other people will take their time to answer and help you.
 ## License
 
 This project is licensed under the GPL-3.0 license - see the [LICENSE.md](LICENSE.md) file for details.
+
+## Screenshots
+
+![image](https://github.com/user-attachments/assets/a6a99e31-39a5-4914-ab1e-a1d2de671b56)
