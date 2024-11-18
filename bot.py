@@ -3,7 +3,7 @@ Copyright © Dino Horvat (Tremmert) 2024-Present - https://github.com/DinoHorvat
 Description:
 A simple bot which tracks the download progress of Sonarr & Radarr instances and reports their status to a Discord channel
 
-Version: 1.1.9
+Version: 1.2.0
 """
 
 import os
@@ -44,6 +44,19 @@ def format_progress_bar(size, sizeleft, bar_length=20):
     except (ValueError, ZeroDivisionError):
         return "Progress unavailable"
 
+
+def calculate_speed(size_left_gb, time_left_minutes):
+    if time_left_minutes <= 0:
+        return "N/A"
+    # Convert size from GB to MB (1 GB = 1024 MB)
+    size_left_mb = size_left_gb * 1024
+    # Convert time from minutes to seconds
+    time_left_seconds = time_left_minutes * 60
+    # Calculate speed in MB/s
+    speed_mb_per_sec = size_left_mb / time_left_seconds
+    # Format speed to MB/s
+    return f"{speed_mb_per_sec:.2f} MB/s"
+
 def query_sonarr(ip, port, api_key, app_title, max_retries=5, delay=10):
     headers = {"X-Api-Key": api_key}
     endpoint = f"http://{ip}:{port}/api/v3/queue/details?includeSeries=true&includeEpisode=true"
@@ -73,6 +86,7 @@ def query_sonarr(ip, port, api_key, app_title, max_retries=5, delay=10):
         timeleft = item.get("timeleft", "N/A")
         size = item.get("size", "N/A")
         sizeleft = item.get("sizeleft", "N/A")
+        sizeleft_gb = item.get("sizeleft", 0) / (1024 ** 3)  # Convert bytes to GB
         error_message = item.get("errorMessage", None)
 
         # Extract and format estimatedCompletionTime
@@ -85,6 +99,19 @@ def query_sonarr(ip, port, api_key, app_title, max_retries=5, delay=10):
 
         # Create the progress bar
         progress_bar = format_progress_bar(size, sizeleft)
+
+        # Convert timeleft to minutes safely
+        if timeleft != "N/A" and ':' in timeleft:
+            try:
+                time_parts = [int(part) for part in timeleft.split(':')]
+                time_left_minutes = time_parts[0] * 60 + time_parts[1] + (time_parts[2] / 60)
+            except (ValueError, IndexError):
+                time_left_minutes = 0  # Default to 0 if parsing fails
+        else:
+            time_left_minutes = 0  # Default to 0 for "N/A" or invalid formats
+
+        # Calculate download speed if time_left_minutes > 0
+        download_speed = calculate_speed(sizeleft_gb, time_left_minutes) if time_left_minutes > 0 else "N/A"
 
         # Extract fields from the nested "series" object
         series = item.get("series", {})
@@ -113,6 +140,7 @@ def query_sonarr(ip, port, api_key, app_title, max_retries=5, delay=10):
         embed.add_field(name="Estimated Completion Time", value=formatted_time, inline=True)
         embed.add_field(name="Status", value=status, inline=True)
         embed.add_field(name="Progress", value=progress_bar, inline=False)
+        embed.add_field(name="Download Speed", value=download_speed, inline=False)
         if error_message:
             embed.add_field(name="Error message", value=error_message, inline=False)
         if webimage:
@@ -150,6 +178,7 @@ def query_radarr(ip, port, api_key, app_title, max_retries=5, delay=10):
         timeleft = item.get("timeleft", "N/A")
         size = item.get("size", "N/A")
         sizeleft = item.get("sizeleft", "N/A")
+        sizeleft_gb = item.get("sizeleft", 0) / (1024 ** 3)  # Convert bytes to GB
         error_message = item.get("errorMessage", None)
 
         # Extract and format estimatedCompletionTime
@@ -162,6 +191,19 @@ def query_radarr(ip, port, api_key, app_title, max_retries=5, delay=10):
 
         # Create the progress bar
         progress_bar = format_progress_bar(size, sizeleft)
+
+        # Convert timeleft to minutes safely
+        if timeleft != "N/A" and ':' in timeleft:
+            try:
+                time_parts = [int(part) for part in timeleft.split(':')]
+                time_left_minutes = time_parts[0] * 60 + time_parts[1] + (time_parts[2] / 60)
+            except (ValueError, IndexError):
+                time_left_minutes = 0  # Default to 0 if parsing fails
+        else:
+            time_left_minutes = 0  # Default to 0 for "N/A" or invalid formats
+
+        # Calculate download speed if time_left_minutes > 0
+        download_speed = calculate_speed(sizeleft_gb, time_left_minutes) if time_left_minutes > 0 else "N/A"
 
         # Extract fields from the nested "movie" object
         movie = item.get("movie", {})
@@ -181,6 +223,7 @@ def query_radarr(ip, port, api_key, app_title, max_retries=5, delay=10):
         embed.add_field(name="Estimated Completion Time", value=formatted_time, inline=True)
         embed.add_field(name="Status", value=status, inline=True)
         embed.add_field(name="Progress", value=progress_bar, inline=False)
+        embed.add_field(name="Download Speed", value=download_speed, inline=False)
         if error_message:
             embed.add_field(name="Error message", value=error_message, inline=False)
         if webimage:
@@ -198,47 +241,70 @@ async def send_default_message(channel):
     default_message = await channel.send("Nothing is being downloaded at the moment. :)")
     return default_message
 
+
 async def handle_messages(channel, embeds, default_message=None):
-    global bot_messages
-    # If there are no messages yet or no embeds to display
+    global bot_messages  # Dictionary to store active messages
+
+    # If no active downloads and no embeds to show
     if not embeds:
-        if default_message:
+        # Delete all existing download messages
+        for message_id, msg_info in list(bot_messages.items()):
             try:
-                await default_message.edit(content="No active downloads currently.")
+                await msg_info['message'].delete()
+                del bot_messages[message_id]
             except discord.errors.NotFound:
-                # If the default message was not found, delete all messages and regenerate
-                await delete_all_messages(channel)
-                default_message = await channel.send("No active downloads currently.")
-        else:
-            # If no default message exists, send a new default message
+                logging.warning(f"Message with ID {message_id} not found when attempting to delete.")
+
+        # Display default message if it's not already displayed
+        if not default_message:  # Only create the default message if it doesn't exist
             default_message = await channel.send("No active downloads currently.")
-        return default_message
+        return default_message  # Return the default message for future reference
 
-    # Delete all previous messages if new data exists
-    if bot_messages:
-        for msg in bot_messages:
-            try:
-                await msg.delete()
-            except discord.errors.NotFound:
-                logging.warning(f"Message with ID {msg.id} not found when attempting to delete.")
-
-    # Send new messages for each embed
-    bot_messages = []
-    for embed in embeds:
-        try:
-            msg = await channel.send(embed=embed)
-            bot_messages.append(msg)
-        except discord.errors.HTTPException as e:
-            logging.error(f"Failed to send message: {e}")
-
-    # Clear the default message if embeds are present
+    # If there are embeds (i.e., active downloads)
+    # Delete the default message if it's currently displayed
     if default_message:
         try:
             await default_message.delete()
+            default_message = None  # Set to None after deleting
         except discord.errors.NotFound:
             logging.warning(f"Default message with ID {default_message.id} not found when attempting to delete.")
 
-    return None  # No default message needed if embeds are present
+    # Mark all existing messages as "inactive" initially
+    for message_id in list(bot_messages.keys()):
+        bot_messages[message_id]['active'] = False
+
+    # Batch embeds into groups of up to 10 (Discord's limit)
+    batched_embeds = [embeds[i:i + 10] for i in range(0, len(embeds), 10)]
+
+    # Update or create new messages for active downloads
+    for i, embed_batch in enumerate(batched_embeds):
+        batch_id = f'batch_{i}'  # Unique ID for each batch of embeds
+
+        if batch_id in bot_messages:
+            # If the message exists, update the embed batch
+            msg = bot_messages[batch_id]['message']
+            try:
+                await msg.edit(embeds=embed_batch)
+                bot_messages[batch_id]['active'] = True  # Mark the message as active
+            except discord.errors.NotFound:
+                logging.warning(f"Message for batch {batch_id} not found. Creating a new one.")
+                new_msg = await channel.send(embeds=embed_batch)
+                bot_messages[batch_id] = {'message': new_msg, 'active': True}
+        else:
+            # If the message doesn't exist, create a new one
+            new_msg = await channel.send(embeds=embed_batch)
+            bot_messages[batch_id] = {'message': new_msg, 'active': True}
+
+    # Delete messages for downloads that are no longer active
+    for download_id, msg_info in list(bot_messages.items()):
+        if not msg_info['active']:
+            try:
+                await msg_info['message'].delete()
+                del bot_messages[download_id]
+            except discord.errors.NotFound:
+                logging.warning(f"Message for download {download_id} not found when attempting to delete.")
+
+    return None  # Return None as no default message is needed when there are active downloads
 
 async def handle_rate_limit(error):
     """Handles rate limit errors by pausing execution for the specified retry_after time."""
@@ -303,6 +369,9 @@ client = commands.Bot(command_prefix='/', intents=intents)
 @client.event
 async def on_ready():
     global bot_messages, default_message
+    bot_messages = {}  # Ensure bot_messages is initialized as a dictionary
+    default_message = None  # Reset default_message
+
     print(f'{client.user} has connected to Discord!')
     channel = client.get_channel(DISCORD_CHANNEL_ID)
 
@@ -334,17 +403,26 @@ async def update_messages():
 
     if channel:
         try:
-            # Fetch data from Sonarr & Radarr instances
+            # Fetch data from Sonarr & Radarr
             embeds = []
-            embeds += query_sonarr(SONARR_IP, SONARR_PORT, SONARR_API_KEY, SONARR_TITLE)
-            embeds += query_sonarr(SONARR_IP_ANIME, SONARR_PORT_ANIME, SONARR_API_KEY_ANIME, SONARR_TITLE_ANIME)
-            embeds += query_radarr(RADARR_IP, RADARR_PORT, RADARR_API_KEY, RADARR_TITLE)
-            embeds += query_radarr(RADARR_IP_ANIME, RADARR_PORT_ANIME, RADARR_API_KEY_ANIME, RADARR_TITLE_ANIME)
+            # Get Sonarr and Radarr data
+            sonarr_embeds = query_sonarr(SONARR_IP, SONARR_PORT, SONARR_API_KEY, SONARR_TITLE)
+            sonarr_anime_embeds = query_sonarr(SONARR_IP_ANIME, SONARR_PORT_ANIME, SONARR_API_KEY_ANIME, SONARR_TITLE_ANIME)
+            radarr_embeds = query_radarr(RADARR_IP, RADARR_PORT, RADARR_API_KEY, RADARR_TITLE)
+            radarr_anime_embeds = query_radarr(RADARR_IP_ANIME, RADARR_PORT_ANIME, RADARR_API_KEY_ANIME, RADARR_TITLE_ANIME)
 
-            # Handle the new messages, delete the old ones
+            # Combine data from both sources
+            embeds += sonarr_embeds
+            embeds += radarr_embeds
+            embeds += sonarr_anime_embeds
+            embeds += radarr_anime_embeds
+
+            # Update messages
             default_message = await handle_messages(channel, embeds, default_message)
+
             # Perform garbage collection
             gc.collect()
+
         except Exception as e:
             logging.error(f"An error occurred in update_messages: {e}")
     else:
